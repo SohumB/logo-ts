@@ -1,17 +1,20 @@
-import { createCanvas } from 'canvas';
+import { createCanvas, NodeCanvasRenderingContext2D } from 'canvas';
 import * as fs from 'fs';
+import { parseProgram } from './parser';
 
 const width = (1920 / 2) - 20;
 const height = 1080 - 20;
 
+const program = "fd 200";
 const canvas = createCanvas(width, height);
-const ctx = canvas.getContext('2d');
+const ctx: NodeCanvasRenderingContext2D = canvas.getContext('2d');
 
-ctx.lineWidth = 10;
-ctx.strokeStyle = "black";
-ctx.beginPath();
-ctx.moveTo(width, 0);
-ctx.lineTo(0, height);
-ctx.stroke();
+let ast = parseProgram(program);
+if (ast != null) {
+    ast.result.eval(ctx, {
+        pos: { x: 400, y: 400 },
+        heading: 100
+    });
+}
 
 fs.writeFileSync('out.png', canvas.toBuffer())
