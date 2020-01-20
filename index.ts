@@ -1,4 +1,4 @@
-import { createCanvas, NodeCanvasRenderingContext2D } from 'canvas';
+import { createCanvas, CanvasRenderingContext2D } from 'canvas';
 import * as fs from 'fs';
 import { parseProgram } from './parser';
 
@@ -7,7 +7,7 @@ const height = 1080 - 20;
 
 const program = "fd 200";
 const canvas = createCanvas(width, height);
-const ctx: NodeCanvasRenderingContext2D = canvas.getContext('2d');
+const ctx: CanvasRenderingContext2D = canvas.getContext('2d');
 
 let ast = parseProgram(program);
 if (ast != null) {

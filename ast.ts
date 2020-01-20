@@ -1,4 +1,4 @@
-import { NodeCanvasRenderingContext2D } from 'canvas';
+import { CanvasRenderingContext2D } from 'canvas';
 
 export interface LogoState {
     pos: { x: number, y: number },
@@ -7,12 +7,12 @@ export interface LogoState {
 }
 
 export interface Exp {
-    eval: (ctx: NodeCanvasRenderingContext2D, state: LogoState) => LogoState
+    eval: (ctx: CanvasRenderingContext2D, state: LogoState) => LogoState
 }
 
 export class Forward implements Exp {
     constructor(readonly pixels: number) { }
-    eval(ctx: NodeCanvasRenderingContext2D, state: LogoState): LogoState {
+    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoState {
         const degrees = state.heading * Math.PI / 180.0;
         ctx.lineWidth = 10;
         ctx.strokeStyle = "black";
@@ -29,7 +29,7 @@ export class Forward implements Exp {
 
 export class Rotate implements Exp {
     constructor(readonly degrees: number) { }
-    eval(_: NodeCanvasRenderingContext2D, state: LogoState): LogoState {
+    eval(_: CanvasRenderingContext2D, state: LogoState): LogoState {
         return {
             pos: state.pos,
             heading: state.heading + this.degrees
@@ -39,7 +39,7 @@ export class Rotate implements Exp {
 
 export class SetHeading implements Exp {
     constructor(readonly degrees: number) { }
-    eval(_: NodeCanvasRenderingContext2D, state: LogoState): LogoState {
+    eval(_: CanvasRenderingContext2D, state: LogoState): LogoState {
         return {
             pos: state.pos,
             heading: this.degrees
