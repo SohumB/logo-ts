@@ -18,12 +18,13 @@ export class Forward implements Exp {
         ctx.strokeStyle = "black";
         ctx.beginPath();
         ctx.moveTo(state.pos.x, state.pos.y);
-        ctx.lineTo(
-            state.pos.x + this.pixels * Math.sin(degrees),
-            state.pos.y + this.pixels * Math.cos(degrees));
+
+        let newx = state.pos.x + this.pixels * Math.sin(degrees);
+        let newy = state.pos.y + this.pixels * Math.cos(degrees);
+        ctx.lineTo(newx, newy);
         ctx.stroke();
 
-        return state;
+        return { ...state, pos: { x: newx, y: newy } };
     }
 }
 
@@ -44,5 +45,13 @@ export class SetHeading implements Exp {
             pos: state.pos,
             heading: this.degrees
         }
+    }
+}
+
+export class Sequence implements Exp {
+    constructor(readonly first: Exp, readonly second: Exp) { }
+    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoState {
+        let intermediateState = this.first.eval(ctx, state);
+        return this.second.eval(ctx, intermediateState);
     }
 }
