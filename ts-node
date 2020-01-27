@@ -1,0 +1,2 @@
+#!/bin/sh
+ts-node --transpile-only -D 5023 -D 2300 $@
