@@ -20,7 +20,7 @@ export class Forward implements Exp {
         ctx.moveTo(state.pos.x, state.pos.y);
 
         let newx = state.pos.x + this.pixels * Math.sin(degrees);
-        let newy = state.pos.y + this.pixels * Math.cos(degrees);
+        let newy = state.pos.y + this.pixels * -Math.cos(degrees);
         ctx.lineTo(newx, newy);
         ctx.stroke();
 
@@ -53,5 +53,16 @@ export class Sequence implements Exp {
     eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoState {
         let intermediateState = this.first.eval(ctx, state);
         return this.second.eval(ctx, intermediateState);
+    }
+}
+
+export class Repeat implements Exp {
+    constructor(readonly times: number, readonly body: Exp) { }
+    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoState {
+        let currentState = state;
+        for (let i = 0; i < this.times; i++) {
+            currentState = this.body.eval(ctx, currentState)
+        }
+        return currentState;
     }
 }

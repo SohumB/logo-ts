@@ -1,19 +1,11 @@
-import { Exp, Forward, Rotate, SetHeading, Sequence } from './ast';
+import { Exp, Forward, Rotate, SetHeading, Sequence, Repeat } from './ast';
 
 interface KnownParseResult<T> {
     unparsed: string,
     result: T
 }
-
-
-type Lazy<T> = () => T;
 type ParseResult<T> = null | KnownParseResult<T>;
-
-function suspend<T>(ft: () => T) { return ft };
-
-function force<T>(l: Lazy<T>): T {
-    return l();
-}
+type Parser<T> = (input: string) => ParseResult<T>;
 
 function map<A, B>(res: ParseResult<A>, f: (arg: A) => B): ParseResult<B> {
     if (res != null) {
@@ -26,33 +18,21 @@ function map<A, B>(res: ParseResult<A>, f: (arg: A) => B): ParseResult<B> {
     }
 }
 
-type Parser<T> = (input: string) => ParseResult<T>;
-
-const parseSpace: Parser<null> =
-    function(input: string): ParseResult<null> {
-        if (input[0] == ' ') {
-            return {
-                unparsed: input.slice(1),
-                result: null
-            }
-        }
-        return null;
-    }
-
 // const parseSpaces: Parser<null> =
 //     function(input: string): ParseResult<null> {
 //         return map(many(parseSpace)(input), _ => null);
 //     }
 
-// does not succeed if no spaces
+type RequireSpace = "require spaces" | "don't require spaces";
 function lexeme<T>(
     parser: Parser<T>,
-    requireSpace: boolean = true): Parser<T> {
+    requireSpace: RequireSpace = "require spaces"): Parser<T> {
     return function(input: string): ParseResult<T> {
         let afterParser = parser(input);
         if (afterParser == null) { return null };
+
         let spaceConsumer = many(parseSpace);
-        if (requireSpace) {
+        if (requireSpace == "require spaces") {
             spaceConsumer = failOnEmpty(spaceConsumer);
         }
         let afterSpaces =
@@ -91,45 +71,61 @@ function failOnEmpty<T>(parser: Parser<T[]>): Parser<T[]> {
 
 function satisfy(fn: (str: string) => boolean): Parser<string> {
     return function(input: string): ParseResult<string> {
-        if (fn(input[0])) {
+        if (input.length < 1 || !fn(input[0])) {
+            return null;
+        } else {
             return {
                 unparsed: input.slice(1),
                 result: input[0]
             }
         }
-        return null;
     }
 }
 
 function span<T, U>(
     parser: Parser<T>,
     fn: (ts: T[]) => U,
-    requireSpace: boolean): Parser<U> {
+    requireSpace: RequireSpace): Parser<U> {
     return lexeme(function(input) {
         let sts = failOnEmpty(many(parser))(input);
         return map(sts, arr => fn(arr));
     }, requireSpace)
 }
 
+const parseSpace: Parser<string> =
+    satisfy((str: string) => /\s/.test(str))
+
 const parseDigit: Parser<string> =
     satisfy((str: string) => str >= '0' && str <= '9');
 
 const parseNumber: Parser<number> =
-    span(parseDigit, arr => parseInt(arr.join('')), false);
+    span(parseDigit, arr => parseInt(arr.join('')), "don't require spaces");
 
+// str => str.isAlpha
 const parseAlpha: Parser<string> =
-    satisfy((str: string) => str >= 'A' && str <= 'z');
+    satisfy((str: string) => ((str >= 'A' && str <= 'Z') ||
+        (str >= 'a' && str <= 'z')));
 
 const parseWord: Parser<string> =
-    span(parseAlpha, arr => arr.join(''), false);
+    span(parseAlpha, arr => arr.join(''), "don't require spaces");
 
 const parseName: Parser<string> =
-    span(parseAlpha, arr => arr.join(''), true);
+    span(parseAlpha, arr => arr.join(''), "require spaces");
 
-function parseCommand(command: string, fn: (px: number) => Exp): Parser<Exp> {
-    return function(input: string): ParseResult<Exp> {
+const parseSingleSymbol: Parser<string> =
+    satisfy((str: string) => (!(/\s/.test(str)) &&
+        !(str >= 'A' && str <= 'Z') &&
+        !(str >= 'a' && str <= 'z') &&
+        !(str < '0' && str > '9')))
+
+const parseSymbol: Parser<string> =
+    span(parseSingleSymbol, arr => arr.join(''), "don't require spaces")
+
+function parseCommand<T>(command: string, fn: (px: number) => T): Parser<T> {
+    return function(input: string): ParseResult<T> {
         const name = parseName(input);
         if (!name || name.result != command) { return null };
+
         const pixels = parseNumber(name.unparsed);
         return map(pixels, fn);
     };
@@ -142,33 +138,6 @@ function choice<T>(parsers: Parser<T>[]): Parser<T> {
             if (res != null) { return res }
         }
         return null;
-    }
-}
-
-function lazyChoice<T>(parsers: Lazy<Parser<T>>[]): Parser<T> {
-    return function(input: string) {
-        for (let p of parsers) {
-            const res = (force(p))(input);
-            if (res != null) { return res }
-        }
-        return null;
-    }
-}
-
-function parseSeq<T, U, V>(
-    pt: Parser<T>,
-    pu: Parser<U>,
-    combine: (t: T, u: U) => V
-): Parser<V> {
-    return function(input): ParseResult<V> {
-        let resT = pt(input);
-        if (!resT) { return null; }
-        let resU = pu(resT.unparsed);
-        if (!resU) { return null; }
-        return {
-            unparsed: resU.unparsed,
-            result: combine(resT.result, resU.result)
-        }
     }
 }
 
@@ -197,33 +166,76 @@ function atEof<T>(p: Parser<T>): Parser<T> {
 
 function recursiveParser<T>(
     baseParser: Parser<T>,
-    stepParser: (pa: Parser<T>, pb: Parser<T>) => Parser<T>,
-    atTopLevel: boolean = true
+    combine: (l: T, r: T) => T
 ): Parser<T> {
-    return lazyChoice([
-        suspend(() =>
-            atTopLevel ?
-                atEof(baseParser) :
-                baseParser),
-        suspend(() => {
-            let r = recursiveParser(baseParser, stepParser, false)
-            return atTopLevel ?
-                atEof(stepParser(r, r)) :
-                stepParser(r, r)
-        })
-    ]);
+    return function(input: string): ParseResult<T> {
+        const start = baseParser(input);
+        if (start == null) { return null; }
+
+        const next = recursiveParser(baseParser, combine)(start.unparsed);
+        if (next == null) { return start; }
+
+        return {
+            result: combine(start.result, next.result),
+            unparsed: next.unparsed
+        }
+    }
 }
 
-const parseExp = choice([
-    parseFd,
-    parseRt,
-    parseSeth
-]);
+function brackets<T>(start: string, inner: Parser<T>, end: string): Parser<T> {
+    return function(input: string): ParseResult<T> {
+        const syml = parseSymbol(input);
+        if (syml == null || syml.result != start) { return null; }
 
-const parseExps = recursiveParser(
-    parseExp,
-    (pa: Parser<Exp>, pb: Parser<Exp>) =>
-        parseSeq(pa, pb, (a, b) => new Sequence(a, b))
-)
+        const innerResult = inner(syml.unparsed);
+        if (innerResult == null) { return null; }
+
+        const symr = parseSymbol(innerResult.unparsed);
+        if (symr == null || symr.result != end) { return null; }
+
+        return {
+            result: innerResult.result,
+            unparsed: symr.unparsed
+        }
+    }
+}
+
+// function lazyOr(a: Parser<T>, b: () => Parser<T> || Lazy<Parser<T>>)
+// parseExp = lazyOr(choice([...]), () => brackets(...))
+
+// TODO: WHY OPTIONAL CHAINING NOT WORK
+const parseRepeat: Parser<Exp> = function(input: string): ParseResult<Exp> {
+    const repResult: ParseResult<number> =
+        parseCommand("repeat", num => num)(input);
+    if (repResult == null) { return null; }
+
+    const statementResult = parseExps(repResult.unparsed);
+    if (statementResult == null) { return null; }
+
+    return {
+        unparsed: statementResult.unparsed,
+        result: new Repeat(repResult.result, statementResult.result)
+    }
+}
+
+const parseExp: () => Parser<Exp> = () => {
+    return function(input: string) {
+        let termResult = choice([
+            parseFd,
+            parseRt,
+            parseSeth,
+            parseRepeat,
+        ])(input);
+
+        if (termResult == null) {
+            return brackets('[', parseExps, ']')(input);
+        } else {
+            return termResult
+        }
+    }
+}
+
+const parseExps: Parser<Exp> =
+    recursiveParser(parseExp(), (a, b) => new Sequence(a, b))
 
 export const parseProgram = parseExps;

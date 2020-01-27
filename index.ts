@@ -5,12 +5,12 @@ import { parseProgram } from './parser';
 const width = 400;
 const height = 400;
 
-const program = "fd 200 fd 200";
+const program = "seth 0\n repeat 20 [fd 20 rt 20]";
 const canvas = createCanvas(width, height);
 const ctx: CanvasRenderingContext2D = canvas.getContext('2d');
 
 let ast = parseProgram(program);
-if (ast != null) {
+if (ast != null && ast.unparsed == '') {
     ast.result.eval(ctx, {
         pos: { x: 200, y: 300 },
         heading: 200
