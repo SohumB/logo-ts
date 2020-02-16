@@ -1,4 +1,16 @@
-import { Exp, Forward, Rotate, SetHeading, Sequence, Repeat } from './ast';
+import {
+    Exp,
+    Forward,
+    Rotate,
+    SetHeading,
+    Sequence,
+    Repeat,
+    Function,
+    Call,
+    AExp,
+    Constant,
+    Variable,
+} from './ast';
 
 interface KnownParseResult<T> {
     unparsed: string,
@@ -15,6 +27,18 @@ function map<A, B>(res: ParseResult<A>, f: (arg: A) => B): ParseResult<B> {
         }
     } else {
         return null
+    }
+}
+
+function pmap<A, B>(p: Parser<A>, f: (arg: A) => B): Parser<B> {
+    return function(input: string) {
+        let pRes = p(input);
+        if (pRes == null) { return null; }
+
+        return {
+            result: f(pRes.result),
+            unparsed: pRes.unparsed
+        }
     }
 }
 
@@ -44,7 +68,7 @@ function lexeme<T>(
     }
 }
 
-function many<T>(parser: Parser<T>): Parser<T[]> {
+export function many<T>(parser: Parser<T>): Parser<T[]> {
     return function(input: string): ParseResult<T[]> {
         let curParseResult = parser(input);
         let curInput = input;
@@ -91,6 +115,7 @@ function span<T, U>(
         return map(sts, arr => fn(arr));
     }, requireSpace)
 }
+const rws: string[] = ["to", "end", "if", "stop", "repeat", "fd", "rt", "seth"];
 
 const parseSpace: Parser<string> =
     satisfy((str: string) => /\s/.test(str))
@@ -112,6 +137,20 @@ const parseWord: Parser<string> =
 const parseName: Parser<string> =
     span(parseAlpha, arr => arr.join(''), "require spaces");
 
+const parseVar: Parser<string> = function(input: string) {
+    const colonRes = satisfy((str: string) => str == ':')(input);
+    if (colonRes == null) { return null; }
+
+    const nameRes = parseName(colonRes.unparsed);
+    if (nameRes == null) { return null; }
+
+    return nameRes;
+}
+
+const numParser: Parser<AExp> = pmap(parseNumber, num => new Constant(num));
+const varParser: Parser<AExp> = pmap(parseVar, name => new Variable(name));
+const parseAExp: Parser<AExp> = choice([numParser, varParser]);
+
 const parseSingleSymbol: Parser<string> =
     satisfy((str: string) => (!(/\s/.test(str)) &&
         !(str >= 'A' && str <= 'Z') &&
@@ -121,15 +160,29 @@ const parseSingleSymbol: Parser<string> =
 const parseSymbol: Parser<string> =
     span(parseSingleSymbol, arr => arr.join(''), "don't require spaces")
 
-function parseCommand<T>(command: string, fn: (px: number) => T): Parser<T> {
+function parseCommand<T>(command: string, fn: (px: AExp) => T): Parser<T> {
     return function(input: string): ParseResult<T> {
         const name = parseName(input);
         if (!name || name.result != command) { return null };
 
-        const pixels = parseNumber(name.unparsed);
-        return map(pixels, fn);
+        const num = parseAExp(name.unparsed);
+        return map(num, fn);
     };
 }
+
+const parseCall: Parser<Exp> = function(input: string): ParseResult<Exp> {
+    const name = parseName(input);
+    if (name == null || rws.includes(name.result)) { return null; }
+
+    const num = many(parseAExp)(name.unparsed);
+    if (num == null) { return null; }
+
+    return {
+        unparsed: num.unparsed,
+        result: new Call(name.result, num.result)
+    }
+};
+
 
 function choice<T>(parsers: Parser<T>[]): Parser<T> {
     return function(input: string) {
@@ -205,7 +258,7 @@ function brackets<T>(start: string, inner: Parser<T>, end: string): Parser<T> {
 
 // TODO: WHY OPTIONAL CHAINING NOT WORK
 const parseRepeat: Parser<Exp> = function(input: string): ParseResult<Exp> {
-    const repResult: ParseResult<number> =
+    const repResult: ParseResult<AExp> =
         parseCommand("repeat", num => num)(input);
     if (repResult == null) { return null; }
 
@@ -218,6 +271,31 @@ const parseRepeat: Parser<Exp> = function(input: string): ParseResult<Exp> {
     }
 }
 
+const parseFn: Parser<Exp> = function(input: string) {
+    const toRes = parseName(input);
+    if (toRes == null || toRes.result != "to") { return null; }
+
+    const nameRes = parseName(toRes.unparsed);
+    if (nameRes == null) { return null; }
+    const name = nameRes.result;
+
+    const varRes = many(parseVar)(nameRes.unparsed);
+    if (varRes == null) { return null; }
+    const vars = varRes.result;
+
+    const expRes = parseExps(varRes.unparsed);
+    if (expRes == null) { return null; }
+    const exps = expRes.result;
+
+    const endRes = parseWord(expRes.unparsed);
+    if (endRes == null || endRes.result != "end") { return null; }
+
+    return {
+        unparsed: endRes.unparsed,
+        result: new Function(name, vars, exps)
+    };
+}
+
 const parseExp: () => Parser<Exp> = () => {
     return function(input: string) {
         let termResult = choice([
@@ -225,6 +303,8 @@ const parseExp: () => Parser<Exp> = () => {
             parseRt,
             parseSeth,
             parseRepeat,
+            parseFn,
+            parseCall,
         ])(input);
 
         if (termResult == null) {
