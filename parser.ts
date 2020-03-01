@@ -7,9 +7,15 @@ import {
     Repeat,
     Function,
     Call,
+    If,
+    Stop,
     AExp,
     Constant,
     Variable,
+    Sub,
+    Div,
+    BExp,
+    Eq,
 } from './ast';
 
 interface KnownParseResult<T> {
@@ -73,17 +79,71 @@ export function many<T>(parser: Parser<T>): Parser<T[]> {
         let curParseResult = parser(input);
         let curInput = input;
         let result = [];
+
         while (curParseResult != null) {
             result.push(curParseResult.result);
             curInput = curParseResult.unparsed;
             curParseResult = parser(curParseResult.unparsed);
         }
+
         return {
             result: result,
             unparsed: curInput
         }
     }
 }
+
+export function binaryLeft<T, O>(
+    baseParser: Parser<T>,
+    opParser: Parser<O>,
+    combine: (l: T, o: O, r: T) => T
+): Parser<T> {
+    return function(input: string): ParseResult<T> {
+        let curParseResult = baseParser(input);
+        if (curParseResult == null) { return null; }
+
+        let curResult = curParseResult.result;
+        let curInput = curParseResult.unparsed;
+
+        while (true) {
+            const opRes = opParser(curInput);
+            if (opRes == null) { break; }
+
+            curParseResult = baseParser(opRes.unparsed);
+            if (curParseResult == null) { break; }
+
+            curResult = combine(curResult, opRes.result, curParseResult.result);
+            curInput = curParseResult.unparsed;
+        }
+
+        return {
+            result: curResult,
+            unparsed: curInput
+        }
+    }
+}
+
+// in our codebase binaryRight is only used for statements
+// statements don't have syntax between them
+// so this does not need an op
+export function binaryRight<T>(
+    baseParser: Parser<T>,
+    combine: (l: T, r: T) => T
+): Parser<T> {
+    return function(input: string): ParseResult<T> {
+        const start = baseParser(input);
+        if (start == null) { return null; }
+
+        const next = binaryRight(baseParser, combine)(start.unparsed);
+        if (next == null) { return start; }
+
+        return {
+            result: combine(start.result, next.result),
+            unparsed: next.unparsed
+        }
+    }
+}
+
 
 function failOnEmpty<T>(parser: Parser<T[]>): Parser<T[]> {
     return function(input: string): ParseResult<T[]> {
@@ -141,7 +201,7 @@ const parseVar: Parser<string> = function(input: string) {
     const colonRes = satisfy((str: string) => str == ':')(input);
     if (colonRes == null) { return null; }
 
-    const nameRes = parseName(colonRes.unparsed);
+    const nameRes = parseWord(colonRes.unparsed);
     if (nameRes == null) { return null; }
 
     return nameRes;
@@ -149,7 +209,40 @@ const parseVar: Parser<string> = function(input: string) {
 
 const numParser: Parser<AExp> = pmap(parseNumber, num => new Constant(num));
 const varParser: Parser<AExp> = pmap(parseVar, name => new Variable(name));
-const parseAExp: Parser<AExp> = choice([numParser, varParser]);
+
+function parseOperation(op: string) {
+    return lexeme(
+        satisfy((str: string) => str == op),
+        "don't require spaces"
+    );
+}
+
+export const parseAExp: Parser<AExp> =
+    binaryLeft(
+        binaryLeft(
+            choice([numParser, varParser]),
+            parseOperation("/"),
+            (l, _, r) => new Div(l, r)
+        ),
+        parseOperation("-"),
+        (l, _, r) => new Sub(l, r)
+    );
+
+export const parseBExp: Parser<BExp> = function(input: string): ParseResult<BExp> {
+    const left = parseAExp(input);
+    if (left == null) { return null; }
+
+    const op = parseOperation("=")(left.unparsed);
+    if (op == null) { return null; }
+
+    const right = parseAExp(op.unparsed);
+    if (right == null) { return null; }
+
+    return {
+        result: new Eq(left.result, right.result),
+        unparsed: right.unparsed
+    }
+}
 
 const parseSingleSymbol: Parser<string> =
     satisfy((str: string) => (!(/\s/.test(str)) &&
@@ -205,33 +298,29 @@ const parseRt: Parser<Exp> =
 const parseSeth: Parser<Exp> =
     parseCommand("seth", px => new SetHeading(px));
 
-// fd 20 rt 120
-// pE: [fd 20]... FAIL because not at eof
-// pS: [fd 20] (succeed, don't care) [rt 120] (sdc) (succeed, at EOF)
+const parseIf: Parser<Exp> = function(input: string): ParseResult<Exp> {
+    const name = parseName(input);
+    if (name == null || name.result != "if") { return null; }
 
-function atEof<T>(p: Parser<T>): Parser<T> {
-    return function(input) {
-        const res = p(input);
-        if (!res || res.unparsed != '') { return null; }
-        return res;
+    const cond = parseBExp(name.unparsed);
+    if (cond == null) { return null; }
+
+    const stm = parseExp()(cond.unparsed);
+    if (stm == null) { return null; }
+
+    return {
+        result: new If(cond.result, stm.result),
+        unparsed: stm.unparsed
     }
-}
+};
 
-function recursiveParser<T>(
-    baseParser: Parser<T>,
-    combine: (l: T, r: T) => T
-): Parser<T> {
-    return function(input: string): ParseResult<T> {
-        const start = baseParser(input);
-        if (start == null) { return null; }
+const parseStop: Parser<Exp> = function(input: string) {
+    let stop = parseWord(input);
+    if (stop == null || stop.result != "stop") { return null }
 
-        const next = recursiveParser(baseParser, combine)(start.unparsed);
-        if (next == null) { return start; }
-
-        return {
-            result: combine(start.result, next.result),
-            unparsed: next.unparsed
-        }
+    return {
+        result: new Stop(),
+        unparsed: stop.unparsed
     }
 }
 
@@ -305,6 +394,8 @@ const parseExp: () => Parser<Exp> = () => {
             parseRepeat,
             parseFn,
             parseCall,
+            parseIf,
+            parseStop
         ])(input);
 
         if (termResult == null) {
@@ -316,6 +407,6 @@ const parseExp: () => Parser<Exp> = () => {
 }
 
 const parseExps: Parser<Exp> =
-    recursiveParser(parseExp(), (a, b) => new Sequence(a, b))
+    binaryRight(parseExp(), (a, b) => new Sequence(a, b))
 
 export const parseProgram = parseExps;

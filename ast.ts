@@ -22,6 +22,8 @@ export interface LogoState {
     fnEnv: FnEnv
 }
 
+type LogoRunning = LogoState & { terminated: boolean };
+
 export interface AExp {
     eval: (env: ArithEnv) => number
 }
@@ -40,15 +42,41 @@ export class Variable {
     }
 }
 
+export class Sub {
+    constructor(readonly left: AExp, readonly right: AExp) { }
+    eval(env: ArithEnv): number {
+        return this.left.eval(env) - this.right.eval(env);
+    }
+}
+
+export class Div {
+    constructor(readonly left: AExp, readonly right: AExp) { }
+    eval(env: ArithEnv): number {
+        return this.left.eval(env) / this.right.eval(env);
+    }
+}
+
+export interface BExp {
+    eval: (env: ArithEnv) => boolean
+}
+
+export class Eq {
+    constructor(readonly left: AExp, readonly right: AExp) { }
+    eval(env: ArithEnv): boolean {
+        return this.left.eval(env) == this.right.eval(env)
+    }
+}
+
+
 export interface Exp {
-    eval: (ctx: CanvasRenderingContext2D, state: LogoState) => LogoState
+    eval: (ctx: CanvasRenderingContext2D, state: LogoState) => LogoRunning
 }
 
 export class Forward implements Exp {
     constructor(readonly pixels: AExp) { }
-    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoState {
+    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoRunning {
         const degrees = state.heading * Math.PI / 180.0;
-        ctx.lineWidth = 10;
+        ctx.lineWidth = 1;
         ctx.strokeStyle = "black";
         ctx.beginPath();
         ctx.moveTo(state.pos.x, state.pos.y);
@@ -60,47 +88,51 @@ export class Forward implements Exp {
         ctx.lineTo(newx, newy);
         ctx.stroke();
 
-        return { ...state, pos: { x: newx, y: newy } };
+        return { ...state, pos: { x: newx, y: newy }, terminated: false };
     }
 }
 
 export class Rotate implements Exp {
     constructor(readonly degrees: AExp) { }
-    eval(_: CanvasRenderingContext2D, state: LogoState): LogoState {
+    eval(_: CanvasRenderingContext2D, state: LogoState): LogoRunning {
         return {
             ...state,
             pos: state.pos,
-            heading: state.heading + this.degrees.eval(state.arithEnv)
+            heading: state.heading + this.degrees.eval(state.arithEnv),
+            terminated: false
         }
     }
 }
 
 export class SetHeading implements Exp {
     constructor(readonly degrees: AExp) { }
-    eval(_: CanvasRenderingContext2D, state: LogoState): LogoState {
+    eval(_: CanvasRenderingContext2D, state: LogoState): LogoRunning {
         return {
             ...state,
             pos: state.pos,
-            heading: this.degrees.eval(state.arithEnv)
+            heading: this.degrees.eval(state.arithEnv),
+            terminated: false
         }
     }
 }
 
 export class Sequence implements Exp {
     constructor(readonly first: Exp, readonly second: Exp) { }
-    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoState {
+    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoRunning {
         let intermediateState = this.first.eval(ctx, state);
+        if (intermediateState.terminated) { return intermediateState; }
         return this.second.eval(ctx, intermediateState);
     }
 }
 
 export class Repeat implements Exp {
     constructor(readonly times: AExp, readonly body: Exp) { }
-    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoState {
-        let currentState = state;
+    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoRunning {
+        let currentState: LogoRunning = { ...state, terminated: false };
         const times = this.times.eval(state.arithEnv);
         for (let i = 0; i < times; i++) {
             currentState = this.body.eval(ctx, currentState)
+            if (currentState.terminated) { break }
         }
         return currentState;
     }
@@ -112,7 +144,7 @@ export class Function implements Exp {
         readonly vars: string[],
         readonly body: Exp) { }
 
-    eval(_: CanvasRenderingContext2D, state: LogoState): LogoState {
+    eval(_: CanvasRenderingContext2D, state: LogoState): LogoRunning {
         const closure = {
             vars: this.vars,
             body: this.body,
@@ -130,7 +162,8 @@ export class Function implements Exp {
 
         return {
             ...state,
-            fnEnv: newEnv
+            fnEnv: newEnv,
+            terminated: false
         }
     }
 }
@@ -146,7 +179,7 @@ export class Function implements Exp {
 export class Call implements Exp {
     constructor(readonly name: string, readonly vars: AExp[]) { }
 
-    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoState {
+    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoRunning {
         let clos = state.fnEnv[this.name];
         // todo: runtime errors
 
@@ -159,12 +192,33 @@ export class Call implements Exp {
             ...state,
             arithEnv: callingArithEnv,
             fnEnv: clos.fnEnv
-        })
+        });
 
         return {
             ...calledState,
             arithEnv: state.arithEnv,
-            fnEnv: state.fnEnv
+            fnEnv: state.fnEnv,
+            terminated: false
         };
+    }
+}
+
+export class If implements Exp {
+    constructor(readonly cond: BExp, readonly body: Exp) { }
+
+    eval(ctx: CanvasRenderingContext2D, state: LogoState): LogoRunning {
+        if (this.cond.eval(state.arithEnv)) {
+            return this.body.eval(ctx, state);
+        } else {
+            return { ...state, terminated: false };
+        }
+    }
+}
+
+export class Stop implements Exp {
+    constructor() { }
+
+    eval(_: CanvasRenderingContext2D, st: LogoState): LogoRunning {
+        return { ...st, terminated: true }
     }
 }
